@@ -294,6 +294,26 @@ creditflow/
 - **At-least-once delivery:** The transaction service writes to PostgreSQL then publishes to Kafka; on rare failures you could see a saved transaction without an event (or retry duplicates). Production systems often use the **outbox pattern** or idempotent consumers.
 - **JWT secret:** Set `JWT_SECRET` in deployment; the Compose file uses a development placeholder.
 
+## What we hit in practice (and what it taught)
+
+On a **tight local disk**, running the full stack surfaced a real distributed-systems failure mode: the **Kafka broker** ran out of space while creating and growing internal topics (including **`__consumer_offsets`**, which appears when the **credit-service** consumer joins a group). The broker became unhealthy or exited; **user-service** and **transaction-service** could still look fine for a while (HTTP + producer-only paths), while **credit-service** stopped processing events because the consumer and group coordinator depend on a stable broker and durable logs.
+
+That experience reinforced a few professional habits:
+
+- **Capacity and `log.dirs`:** Brokers need predictable headroom; dev laptops are unforgiving.
+- **Retention and topic footprint:** Internal topics multiply partitions and index files; defaults matter on small volumes.
+- **Observability:** Without disk and broker health checks, the symptom (“score never updates”) is easy to misattribute to application code.
+- **Fault tolerance:** Producers and consumers fail differently; end-to-end tests catch what unit tests miss.
+
+### How to say it in interviews
+
+Use your own words, but the core story is:
+
+> “I ran into an issue where my Kafka broker hit storage limits, which caused my credit service consumer to fail and stop processing events. It helped me understand the importance of log retention, monitoring, and fault tolerance in distributed systems.”
+
+That frames a concrete incident, ties it to **infrastructure + app behavior**, and shows you reason about **operational concerns**, not only features.
+
 ## License
 
+Author: Kester Nkese
 Sample / portfolio project — use and modify freely.
