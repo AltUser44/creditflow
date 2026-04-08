@@ -1,0 +1,113 @@
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    ports:
+      - "2181:2181"
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+
+  kafka:
+    image: bitnami/kafka:3.6
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+    depends_on:
+      - zookeeper
+
+  kafka-init:
+    image: bitnami/kafka:3.6
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        echo "Waiting for Kafka..."
+        for i in $$(seq 1 60); do
+          /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
+          sleep 2
+        done
+        /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic transaction-events --partitions 1 --replication-factor 1
+        echo "Topic transaction-events ready."
+    restart: "no"
+
+  postgres:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: creditflow
+      POSTGRES_PASSWORD: creditflow
+      POSTGRES_DB: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U creditflow -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  user-service:
+    build:
+      context: .
+      dockerfile: user-service/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      HTTP_HOST: "0.0.0.0"
+      HTTP_PORT: "8081"
+      JDBC_URL: jdbc:postgresql://postgres:5432/users_db
+      DB_USER: creditflow
+      DB_PASSWORD: creditflow
+      JWT_SECRET: dev-secret-change-in-production-min-32-chars-long
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  transaction-service:
+    build:
+      context: .
+      dockerfile: transaction-service/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      HTTP_HOST: "0.0.0.0"
+      HTTP_PORT: "8082"
+      JDBC_URL: jdbc:postgresql://postgres:5432/transactions_db
+      DB_USER: creditflow
+      DB_PASSWORD: creditflow
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CLIENT_ID: transaction-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+
+  credit-service:
+    build:
+      context: .
+      dockerfile: credit-service/Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      HTTP_HOST: "0.0.0.0"
+      HTTP_PORT: "8083"
+      JDBC_URL: jdbc:postgresql://postgres:5432/credit_db
+      DB_USER: creditflow
+      DB_PASSWORD: creditflow
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: credit-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
